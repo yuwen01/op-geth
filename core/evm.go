@@ -63,6 +63,7 @@ func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common
 	if header.Difficulty.Sign() == 0 {
 		random = &header.MixDigest
 	}
+
 	return vm.BlockContext{
 		CanTransfer:      CanTransfer,
 		Transfer:         Transfer,

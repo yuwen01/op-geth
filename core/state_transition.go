@@ -260,6 +260,8 @@ func (st *StateTransition) buyGas() error {
 			mgval = mgval.Add(mgval, operatorCost)
 		}
 	}
+	fmt.Println("operatorCost", operatorCost)
+	fmt.Println("gas limit", st.msg.GasLimit)
 
 	balanceCheck := new(big.Int).Set(mgval)
 	if st.msg.GasFeeCap != nil {
@@ -592,8 +594,12 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 
 	// Check that we are post bedrock to enable op-geth to be able to create pseudo pre-bedrock blocks (these are pre-bedrock, but don't follow l2 geth rules)
 	// Note optimismConfig will not be nil if rules.IsOptimismBedrock is true
+	// just for testing ...
+	rules.IsOptimismBedrock = true
+
 	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && rules.IsOptimismBedrock && !st.msg.IsDepositTx {
 		gasCost := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.BaseFee)
+		fmt.Println("Activating optimism fees")
 		amtU256, overflow := uint256.FromBig(gasCost)
 		if overflow {
 			return nil, fmt.Errorf("optimism gas cost overflows U256: %d", gasCost)

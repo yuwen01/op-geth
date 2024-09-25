@@ -18,6 +18,7 @@ package core
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -71,9 +72,26 @@ func BenchmarkInsertChain_ring1000_diskdb(b *testing.B) {
 
 var (
 	// This is the content of the genesis block used by the benchmarks.
-	benchRootKey, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
-	benchRootAddr   = crypto.PubkeyToAddress(benchRootKey.PublicKey)
-	benchRootFunds  = math.BigPow(2, 200)
+	benchRootKey, _          = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	benchRootAddr            = crypto.PubkeyToAddress(benchRootKey.PublicKey)
+	benchRootFunds           = math.BigPow(10, 60)
+	bedrockGenesisTestConfig = func() *params.ChainConfig {
+		conf := *params.AllCliqueProtocolChanges // copy the config
+		conf.Clique = nil
+		conf.TerminalTotalDifficultyPassed = true
+		conf.BedrockBlock = big.NewInt(0)
+		conf.Optimism = &params.OptimismConfig{EIP1559Elasticity: 50, EIP1559Denominator: 10}
+		return &conf
+	}()
+
+	holoceneTestConfig = func() *params.ChainConfig {
+		conf := *bedrockGenesisTestConfig // copy the config
+		time := uint64(0)
+		bigintTime := new(big.Int).SetUint64(time)
+		conf.HoloceneTime = &time
+		conf.BedrockBlock = bigintTime
+		return &conf
+	}()
 )
 
 // genValueTx returns a block generator that includes a single
@@ -120,41 +138,37 @@ func init() {
 // and fills the blocks with many small transactions.
 func genTxRing(naccounts int) func(int, *BlockGen) {
 	from := 0
-	availableFunds := new(big.Int).Set(benchRootFunds)
+	availableFunds := new(big.Int).Set(benchRootFunds).Div(benchRootFunds, big.NewInt(int64(2)))
 	return func(i int, gen *BlockGen) {
-		block := gen.PrevBlock(i - 1)
-		gas := block.GasLimit()
-		gasPrice := big.NewInt(0)
-		if gen.header.BaseFee != nil {
-			gasPrice = gen.header.BaseFee
-		}
+		// block := gen.PrevBlock(i - 1)
+		// gas := block.GasLimit()
+		// gasPrice := big.NewInt(0)
+		// if gen.header.BaseFee != nil {
+		// 	gasPrice = gen.header.BaseFee
+		// }
 		signer := gen.Signer()
-		for {
-			gas -= params.TxGas
-			if gas < params.TxGas {
-				break
-			}
-			to := (from + 1) % naccounts
-			burn := new(big.Int).SetUint64(params.TxGas)
-			burn.Mul(burn, gen.header.BaseFee)
-			availableFunds.Sub(availableFunds, burn)
-			if availableFunds.Cmp(big.NewInt(1)) < 0 {
-				panic("not enough funds")
-			}
-			tx, err := types.SignNewTx(ringKeys[from], signer,
-				&types.LegacyTx{
-					Nonce:    gen.TxNonce(ringAddrs[from]),
-					To:       &ringAddrs[to],
-					Value:    availableFunds,
-					Gas:      params.TxGas,
-					GasPrice: gasPrice,
-				})
-			if err != nil {
-				panic(err)
-			}
-			gen.AddTx(tx)
-			from = to
+		to := (from + 1) % naccounts
+		burn := new(big.Int).SetUint64(params.TxGas)
+		burn.Mul(burn, gen.header.BaseFee)
+		availableFunds.Sub(availableFunds, burn)
+		if availableFunds.Cmp(big.NewInt(1)) < 0 {
+			panic("not enough funds")
 		}
+		tx, err := types.SignNewTx(ringKeys[from], signer,
+			&types.DynamicFeeTx{
+				Nonce:     gen.TxNonce(ringAddrs[from]),
+				To:        &ringAddrs[to],
+				Value:     availableFunds,
+				Gas:       params.TxGas,
+				GasTipCap: big.NewInt(2),
+				GasFeeCap: gen.header.BaseFee,
+				// GasFeeCap: gen.header.BaseFee.Mul(gen.header.BaseFee, big.NewInt(2)),
+			})
+		if err != nil {
+			panic(err)
+		}
+		gen.AddTx(tx)
+		from = to
 	}
 }
 
@@ -168,6 +182,10 @@ func genUncles(i int, gen *BlockGen) {
 		b3.Extra = []byte("bar")
 		gen.AddUncle(b3)
 	}
+}
+
+func BenchmarkInsertChain_SMALL(b *testing.B) {
+	benchInsertChain(b, false, genTxRing(100))
 }
 
 func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
@@ -185,23 +203,39 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 		defer db.Close()
 	}
 
+	m := make(map[common.Address]types.Account)
+	m[ringAddrs[0]] = types.Account{Balance: benchRootFunds}
+	m[benchRootAddr] = types.Account{Balance: benchRootFunds}
+	var l1FeeBytes [32]byte
+	l1FeeBytes[11] = 10 // lsb of the operatorfeeconstant
+	l1FeeBytes[15] = 9  // lsb of the operatorfeescalar
+	l1FeeBytesHash := common.BytesToHash(l1FeeBytes[:])
+	m[types.L1BlockAddr] = types.Account{Storage: map[common.Hash]common.Hash{types.L1FeeScalarsSlot: l1FeeBytesHash}}
 	// Generate a chain of b.N blocks using the supplied block
 	// generator function.
 	gspec := &Genesis{
-		Config: params.TestChainConfig,
-		Alloc:  types.GenesisAlloc{benchRootAddr: {Balance: benchRootFunds}},
+		Config: holoceneTestConfig,
+		Alloc:  types.GenesisAlloc(m),
 	}
 	_, chain, _ := GenerateChainWithGenesis(gspec, ethash.NewFaker(), b.N, gen)
-
 	// Time the insertion of the new chain.
 	// State and blocks are stored in the same DB.
-	chainman, _ := NewBlockChain(db, nil, gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
+	chainman, _ := NewBlockChain(db, nil, gspec, nil, ethash.NewFaker(), vm.Config{NoBaseFee: false}, nil, nil)
 	defer chainman.Stop()
 	b.ReportAllocs()
 	b.ResetTimer()
 	if i, err := chainman.InsertChain(chain); err != nil {
 		b.Fatalf("insert error (block %d): %v\n", i, err)
 	}
+
+	// Read back the last block to ensure the chain is correct.
+	block := chain[0]
+	fmt.Println("gas used", block.GasUsed())
+	state, _ := chainman.State()
+	fmt.Println("len chain: ", chainman.CurrentBlock().Coinbase)
+	fmt.Println("ring addrs 0 balance", state.GetBalance(ringAddrs[0]))
+	fmt.Println("ring addrs 1 balance", state.GetBalance(ringAddrs[1]))
+	fmt.Println("coinbase balance", state.GetBalance(chainman.CurrentBlock().Coinbase))
 }
 
 func BenchmarkChainRead_header_10k(b *testing.B) {
