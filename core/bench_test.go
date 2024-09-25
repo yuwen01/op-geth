@@ -18,6 +18,7 @@ package core
 
 import (
 	"crypto/ecdsa"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"testing"
@@ -159,7 +160,7 @@ func genTxRing(naccounts int) func(int, *BlockGen) {
 				Nonce:     gen.TxNonce(ringAddrs[from]),
 				To:        &ringAddrs[to],
 				Value:     availableFunds,
-				Gas:       params.TxGas,
+				Gas:       params.TxGas * 2,
 				GasTipCap: big.NewInt(2),
 				GasFeeCap: gen.header.BaseFee,
 				// GasFeeCap: gen.header.BaseFee.Mul(gen.header.BaseFee, big.NewInt(2)),
@@ -208,7 +209,9 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 	m[benchRootAddr] = types.Account{Balance: benchRootFunds}
 	var l1FeeBytes [32]byte
 	l1FeeBytes[11] = 10 // lsb of the operatorfeeconstant
-	l1FeeBytes[15] = 9  // lsb of the operatorfeescalar
+	var scalar uint32 = 9_000_000
+	binary.BigEndian.PutUint32(l1FeeBytes[12:16], scalar)
+	fmt.Println("fee bytes", l1FeeBytes)
 	l1FeeBytesHash := common.BytesToHash(l1FeeBytes[:])
 	m[types.L1BlockAddr] = types.Account{Storage: map[common.Hash]common.Hash{types.L1FeeScalarsSlot: l1FeeBytesHash}}
 	// Generate a chain of b.N blocks using the supplied block
@@ -230,6 +233,8 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 
 	// Read back the last block to ensure the chain is correct.
 	block := chain[0]
+	fmt.Println("*********************************************************")
+	fmt.Println("block num transactoins", len(block.Transactions()))
 	fmt.Println("gas used", block.GasUsed())
 	state, _ := chainman.State()
 	fmt.Println("len chain: ", chainman.CurrentBlock().Coinbase)

@@ -584,6 +584,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 	} else {
 		fee := new(uint256.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTipU256)
+		fmt.Println("fee", fee)
 		st.state.AddBalance(st.evm.Context.Coinbase, fee, tracing.BalanceIncreaseRewardTransactionFee)
 
 		// add the coinbase to the witness iff the fee is greater than 0
@@ -592,6 +593,8 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 		}
 	}
 
+	fmt.Println("gas used", st.gasUsed())
+
 	// Check that we are post bedrock to enable op-geth to be able to create pseudo pre-bedrock blocks (these are pre-bedrock, but don't follow l2 geth rules)
 	// Note optimismConfig will not be nil if rules.IsOptimismBedrock is true
 	// just for testing ...
@@ -599,7 +602,6 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 
 	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && rules.IsOptimismBedrock && !st.msg.IsDepositTx {
 		gasCost := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.BaseFee)
-		fmt.Println("Activating optimism fees")
 		amtU256, overflow := uint256.FromBig(gasCost)
 		if overflow {
 			return nil, fmt.Errorf("optimism gas cost overflows U256: %d", gasCost)
@@ -619,7 +621,10 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			if overflow {
 				return nil, fmt.Errorf("optimism operator cost overflows U256: %d", operatorCost)
 			}
+			fmt.Println("amt paid", amtU256)
+			fmt.Println("coinbase old balance", st.state.GetBalance(st.evm.Context.Coinbase))
 			st.state.AddBalance(st.evm.Context.Coinbase, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+			fmt.Println("coinbase new balance", st.state.GetBalance(st.evm.Context.Coinbase))
 		}
 	}
 
@@ -654,7 +659,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64) uint64 {
 		if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasRemaining), false, st.evm.Context.Time); operatorCost != nil {
 			amtU256, overflow := uint256.FromBig(operatorCost)
 			if !overflow {
-				st.state.AddBalance(st.evm.Context.Coinbase, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+				st.state.AddBalance(st.msg.From, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
 			}
 		}
 	}
