@@ -234,7 +234,7 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 	// Read back the last block to ensure the chain is correct.
 	block := chain[0]
 	fmt.Println("*********************************************************")
-	fmt.Println("block num transactoins", len(block.Transactions()))
+	fmt.Println("block num transactop=ns", len(block.Transactions()))
 	fmt.Println("gas used", block.GasUsed())
 	state, _ := chainman.State()
 	fmt.Println("len chain: ", chainman.CurrentBlock().Coinbase)
