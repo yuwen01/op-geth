@@ -64,6 +64,8 @@ var (
 	BedrockL1AttributesSelector = []byte{0x01, 0x5d, 0x8e, 0xb9}
 	// EcotoneL1AttributesSelector is the selector indicating Ecotone style L1 gas attributes.
 	EcotoneL1AttributesSelector = []byte{0x44, 0x0a, 0x5e, 0x20}
+	// HoloceneL1AttributesSelector is the selector indicating Holocene style L1 gas attributes.
+	HoloceneL1AttributesSelector = []byte{0xd1, 0xfb, 0xe1, 0x5b}
 
 	// L1BlockAddr is the address of the L1Block contract which stores the L1 gas attributes.
 	L1BlockAddr = common.HexToAddress("0x4200000000000000000000000000000000000015")
@@ -363,13 +365,13 @@ func extractL1GasParamsPreEcotone(config *params.ChainConfig, time uint64, data 
 }
 
 // extractL1GasParamsPostEcotone extracts the gas parameters necessary to compute gas from L1 attribute
-// info calldata after the Ecotone upgrade, but not for the very first Ecotone block.
+// info calldata after the Ecotone upgrade, other than the very first Ecotone block.
 func extractL1GasParamsPostEcotone(data []byte) (gasParams, error) {
-	if len(data) != 164 {
-		return gasParams{}, fmt.Errorf("expected 164 L1 info bytes, got %d", len(data))
+	expectedLen := 164
+	if len(data) != expectedLen {
+		return gasParams{}, fmt.Errorf("expected %d L1 info bytes, got %d", expectedLen, len(data))
 	}
 	// data layout assumed for Ecotone:
-	// offset type varname
 	// 0     <selector>
 	// 4     uint32 _basefeeScalar
 	// 8     uint32 _blobBaseFeeScalar
@@ -395,8 +397,8 @@ func extractL1GasParamsPostEcotone(data []byte) (gasParams, error) {
 // extractL1GasParamsPostHolocene extracts the gas parameters necessary to compute gas from L1 attribute
 // info calldata after the Holocene upgrade, but not for the very first Holocene block.
 func extractL1GasParamsPostHolocene(data []byte) (gasParams, error) {
-	if len(data) != 196 {
-		return gasParams{}, fmt.Errorf("expected 196 L1 info bytes, got %d", len(data))
+	if len(data) != 192 {
+		return gasParams{}, fmt.Errorf("expected 192 L1 info bytes, got %d", len(data))
 	}
 	// data layout assumed for Holocene:
 	// offset type varname
@@ -414,7 +416,6 @@ func extractL1GasParamsPostHolocene(data []byte) (gasParams, error) {
 	// 172   uint64  _eip1559Elasticity
 	// 180   uint32  _operatorFeeScalar
 	// 184   uint64  _operatorFeeConstant
-	// 192   uint32  UNUSED
 	l1BaseFee := new(big.Int).SetBytes(data[36:68])
 	l1BlobBaseFee := new(big.Int).SetBytes(data[68:100])
 	l1BaseFeeScalar := binary.BigEndian.Uint32(data[4:8])
