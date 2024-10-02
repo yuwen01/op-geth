@@ -241,6 +241,7 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 	fmt.Println("ring addrs 0 balance", state.GetBalance(ringAddrs[0]))
 	fmt.Println("ring addrs 1 balance", state.GetBalance(ringAddrs[1]))
 	fmt.Println("coinbase balance", state.GetBalance(chainman.CurrentBlock().Coinbase))
+	fmt.Println("operator fee recipient balance", state.GetBalance(params.OptimismOperatorFeeRecipient))
 }
 
 func BenchmarkChainRead_header_10k(b *testing.B) {

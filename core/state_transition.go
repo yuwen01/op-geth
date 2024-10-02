@@ -621,10 +621,7 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 			if overflow {
 				return nil, fmt.Errorf("optimism operator cost overflows U256: %d", operatorCost)
 			}
-			fmt.Println("amt paid", amtU256)
-			fmt.Println("coinbase old balance", st.state.GetBalance(st.evm.Context.Coinbase))
-			st.state.AddBalance(st.evm.Context.Coinbase, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
-			fmt.Println("coinbase new balance", st.state.GetBalance(st.evm.Context.Coinbase))
+			st.state.AddBalance(params.OptimismOperatorFeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
 		}
 	}
 
