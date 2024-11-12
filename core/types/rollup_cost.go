@@ -55,7 +55,7 @@ var (
 	// EcotoneL1AttributesSelector is the selector indicating Ecotone style L1 gas attributes.
 	EcotoneL1AttributesSelector = []byte{0x44, 0x0a, 0x5e, 0x20}
 	// IsthmusL1AttributesSelector is the selector indicating Isthmus style L1 gas attributes.
-	IsthmusL1AttributesSelector = []byte{0xd1, 0xfb, 0xe1, 0x5b}
+	IsthmusL1AttributesSelector = []byte{0x09, 0x89, 0x99, 0xbe}
 
 	// L1BlockAddr is the address of the L1Block contract which stores the L1 gas attributes.
 	L1BlockAddr = common.HexToAddress("0x4200000000000000000000000000000000000015")
@@ -357,13 +357,13 @@ func extractL1GasParamsPreEcotone(config *params.ChainConfig, time uint64, data 
 }
 
 // extractL1GasParamsPostEcotone extracts the gas parameters necessary to compute gas from L1 attribute
-// info calldata after the Ecotone upgrade, other than the very first Ecotone block.
+// info calldata after the Ecotone upgrade, but not for the very first Ecotone block.
 func extractL1GasParamsPostEcotone(data []byte) (gasParams, error) {
-	expectedLen := 164
-	if len(data) != expectedLen {
-		return gasParams{}, fmt.Errorf("expected %d L1 info bytes, got %d", expectedLen, len(data))
+	if len(data) != 164 {
+		return gasParams{}, fmt.Errorf("expected 164 L1 info bytes, got %d", len(data))
 	}
 	// data layout assumed for Ecotone:
+	// offset type varname
 	// 0     <selector>
 	// 4     uint32 _basefeeScalar
 	// 8     uint32 _blobBaseFeeScalar
@@ -449,14 +449,7 @@ func NewL1CostFuncFjord(l1BaseFee, l1BlobBaseFee, baseFeeScalar, blobFeeScalar *
 		calldataCostPerByte := new(big.Int).Mul(scaledL1BaseFee, sixteen)
 		blobCostPerByte := new(big.Int).Mul(blobFeeScalar, l1BlobBaseFee)
 		l1FeeScaled := new(big.Int).Add(calldataCostPerByte, blobCostPerByte)
-
-		fastLzSize := new(big.Int).SetUint64(costData.FastLzSize)
-		estimatedSize := new(big.Int).Add(L1CostIntercept, new(big.Int).Mul(L1CostFastlzCoef, fastLzSize))
-
-		if estimatedSize.Cmp(MinTransactionSizeScaled) < 0 {
-			estimatedSize.Set(MinTransactionSizeScaled)
-		}
-
+		estimatedSize := costData.estimatedDASizeScaled()
 		l1CostScaled := new(big.Int).Mul(estimatedSize, l1FeeScaled)
 		l1Cost := new(big.Int).Div(l1CostScaled, fjordDivisor)
 
@@ -465,6 +458,25 @@ func NewL1CostFuncFjord(l1BaseFee, l1BlobBaseFee, baseFeeScalar, blobFeeScalar *
 
 		return l1Cost, calldataGasUsed
 	}
+}
+
+// estimatedDASizeScaled estimates the number of bytes the transaction will occupy in the DA batch using the Fjord
+// linear regression model, and returns this value scaled up by 1e6.
+func (cd RollupCostData) estimatedDASizeScaled() *big.Int {
+	fastLzSize := new(big.Int).SetUint64(cd.FastLzSize)
+	estimatedSize := new(big.Int).Add(L1CostIntercept, new(big.Int).Mul(L1CostFastlzCoef, fastLzSize))
+
+	if estimatedSize.Cmp(MinTransactionSizeScaled) < 0 {
+		estimatedSize.Set(MinTransactionSizeScaled)
+	}
+	return estimatedSize
+}
+
+// EstimatedDASize estimates the number of bytes the transaction will occupy in its DA batch using the Fjord linear
+// regression model.
+func (cd RollupCostData) EstimatedDASize() *big.Int {
+	b := cd.estimatedDASizeScaled()
+	return b.Div(b, big.NewInt(1e6))
 }
 
 func extractEcotoneFeeParams(l1FeeParams []byte) (l1BaseFeeScalar, l1BlobBaseFeeScalar *big.Int) {
