@@ -142,37 +142,43 @@ type Message struct {
 	BlobGasFeeCap *big.Int
 	BlobHashes    []common.Hash
 
-	// When SkipAccountChecks is true, the message nonce is not checked against the
-	// account nonce in state. It also disables checking that the sender is an EOA.
+	// When SkipNonceChecks is true, the message nonce is not checked against the
+	// account nonce in state.
 	// This field will be set to true for operations like RPC eth_call.
-	SkipAccountChecks bool
+	SkipNonceChecks bool
+
+	// When SkipFromEOACheck is true, the message sender is not checked to be an EOA.
+	SkipFromEOACheck bool
 
 	IsSystemTx     bool                 // IsSystemTx indicates the message, if also a deposit, does not emit gas usage.
 	IsDepositTx    bool                 // IsDepositTx indicates the message is force-included and can persist a mint.
 	Mint           *big.Int             // Mint is the amount to mint before EVM processing, or nil if there is no minting.
 	RollupCostData types.RollupCostData // RollupCostData caches data to compute the fee we charge for data availability
+
+	PostValidation func(evm *vm.EVM, result *ExecutionResult) error
 }
 
 // TransactionToMessage converts a transaction into a Message.
 func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.Int) (*Message, error) {
 	msg := &Message{
-		Nonce:          tx.Nonce(),
-		GasLimit:       tx.Gas(),
-		GasPrice:       new(big.Int).Set(tx.GasPrice()),
-		GasFeeCap:      new(big.Int).Set(tx.GasFeeCap()),
-		GasTipCap:      new(big.Int).Set(tx.GasTipCap()),
-		To:             tx.To(),
-		Value:          tx.Value(),
-		Data:           tx.Data(),
-		AccessList:     tx.AccessList(),
+		Nonce:            tx.Nonce(),
+		GasLimit:         tx.Gas(),
+		GasPrice:         new(big.Int).Set(tx.GasPrice()),
+		GasFeeCap:        new(big.Int).Set(tx.GasFeeCap()),
+		GasTipCap:        new(big.Int).Set(tx.GasTipCap()),
+		To:               tx.To(),
+		Value:            tx.Value(),
+		Data:             tx.Data(),
+		AccessList:       tx.AccessList(),
+		SkipNonceChecks:  false,
+		SkipFromEOACheck: false,
+		BlobHashes:       tx.BlobHashes(),
+		BlobGasFeeCap:    tx.BlobGasFeeCap(),
+
 		IsSystemTx:     tx.IsSystemTx(),
 		IsDepositTx:    tx.IsDepositTx(),
 		Mint:           tx.Mint(),
 		RollupCostData: tx.RollupCostData(),
-
-		SkipAccountChecks: false,
-		BlobHashes:        tx.BlobHashes(),
-		BlobGasFeeCap:     tx.BlobGasFeeCap(),
 	}
 	// If baseFee provided, set gasPrice to effectiveGasPrice.
 	if baseFee != nil {
@@ -247,20 +253,19 @@ func (st *StateTransition) buyGas() error {
 	mgval := new(big.Int).SetUint64(st.msg.GasLimit)
 	mgval.Mul(mgval, st.msg.GasPrice)
 	var l1Cost *big.Int
-	if st.evm.Context.L1CostFunc != nil && !st.msg.SkipAccountChecks {
+	if st.evm.Context.L1CostFunc != nil && !st.msg.SkipNonceChecks && !st.msg.SkipFromEOACheck {
 		l1Cost = st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time)
 		if l1Cost != nil {
 			mgval = mgval.Add(mgval, l1Cost)
 		}
 	}
 	var operatorCost *big.Int
-	if st.evm.Context.OperatorCostFunc != nil && !st.msg.SkipAccountChecks {
-		operatorCost = st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), true, st.evm.Context.Time)
+	if st.evm.Context.OperatorCostFunc != nil && !st.msg.SkipNonceChecks && !st.msg.SkipFromEOACheck {
+		operatorCost = st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), false, st.evm.Context.Time)
 		if operatorCost != nil {
 			mgval = mgval.Add(mgval, operatorCost)
 		}
 	}
-
 	balanceCheck := new(big.Int).Set(mgval)
 	if st.msg.GasFeeCap != nil {
 		balanceCheck.SetUint64(st.msg.GasLimit)
@@ -326,7 +331,7 @@ func (st *StateTransition) preCheck() error {
 	}
 	// Only check transactions that are not fake
 	msg := st.msg
-	if !msg.SkipAccountChecks {
+	if !msg.SkipNonceChecks {
 		// Make sure this transaction's nonce is correct.
 		stNonce := st.state.GetNonce(msg.From)
 		if msgNonce := msg.Nonce; stNonce < msgNonce {
@@ -339,6 +344,8 @@ func (st *StateTransition) preCheck() error {
 			return fmt.Errorf("%w: address %v, nonce: %d", ErrNonceMax,
 				msg.From.Hex(), stNonce)
 		}
+	}
+	if !msg.SkipFromEOACheck {
 		// Make sure the sender is an EOA
 		codeHash := st.state.GetCodeHash(msg.From)
 		if codeHash != (common.Hash{}) && codeHash != types.EmptyCodeHash {
@@ -452,6 +459,13 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		}
 		err = nil
 	}
+
+	if st.msg.PostValidation != nil {
+		if err := st.msg.PostValidation(st.evm, result); err != nil {
+			return nil, err
+		}
+	}
+
 	return result, err
 }
 
@@ -586,34 +600,32 @@ func (st *StateTransition) innerTransitionDb() (*ExecutionResult, error) {
 
 		// add the coinbase to the witness iff the fee is greater than 0
 		if rules.IsEIP4762 && fee.Sign() != 0 {
-			st.evm.AccessEvents.BalanceGas(st.evm.Context.Coinbase, true)
-		}
-	}
-
-	// Check that we are post bedrock to enable op-geth to be able to create pseudo pre-bedrock blocks (these are pre-bedrock, but don't follow l2 geth rules)
-	// Note optimismConfig will not be nil if rules.IsOptimismBedrock is true
-	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && rules.IsOptimismBedrock && !st.msg.IsDepositTx {
-		gasCost := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.BaseFee)
-		amtU256, overflow := uint256.FromBig(gasCost)
-		if overflow {
-			return nil, fmt.Errorf("optimism gas cost overflows U256: %d", gasCost)
-		}
-		st.state.AddBalance(params.OptimismBaseFeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
-		if l1Cost := st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time); l1Cost != nil {
-			amtU256, overflow = uint256.FromBig(l1Cost)
-			if overflow {
-				return nil, fmt.Errorf("optimism l1 cost overflows U256: %d", l1Cost)
-			}
-			st.state.AddBalance(params.OptimismL1FeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+			st.evm.AccessEvents.AddAccount(st.evm.Context.Coinbase, true)
 		}
 
-		// Additionally pay the coinbase according for the operator fee.
-		if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasUsed()), true, st.evm.Context.Time); operatorCost != nil {
-			amtU256, overflow = uint256.FromBig(operatorCost)
+		// Check that we are post bedrock to enable op-geth to be able to create pseudo pre-bedrock blocks (these are pre-bedrock, but don't follow l2 geth rules)
+		// Note optimismConfig will not be nil if rules.IsOptimismBedrock is true
+		if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && rules.IsOptimismBedrock && !st.msg.IsDepositTx {
+			gasCost := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.BaseFee)
+			amtU256, overflow := uint256.FromBig(gasCost)
 			if overflow {
-				return nil, fmt.Errorf("optimism operator cost overflows U256: %d", operatorCost)
+				return nil, fmt.Errorf("optimism gas cost overflows U256: %d", gasCost)
 			}
-			st.state.AddBalance(params.OptimismOperatorFeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+			st.state.AddBalance(params.OptimismBaseFeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+			if l1Cost := st.evm.Context.L1CostFunc(st.msg.RollupCostData, st.evm.Context.Time); l1Cost != nil {
+				amtU256, overflow = uint256.FromBig(l1Cost)
+				if overflow {
+					return nil, fmt.Errorf("optimism l1 cost overflows U256: %d", l1Cost)
+				}
+				st.state.AddBalance(params.OptimismL1FeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+			}
+			if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), false, st.evm.Context.Time); operatorCost != nil {
+				amtU256, overflow = uint256.FromBig(operatorCost)
+				if overflow {
+					return nil, fmt.Errorf("optimism operator cost overflows U256: %d", operatorCost)
+				}
+				st.state.AddBalance(params.OptimismOperatorFeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
+			}
 		}
 	}
 
@@ -643,18 +655,18 @@ func (st *StateTransition) refundGas(refundQuotient uint64) uint64 {
 	remaining.Mul(remaining, uint256.MustFromBig(st.msg.GasPrice))
 	st.state.AddBalance(st.msg.From, remaining, tracing.BalanceIncreaseGasReturn)
 
-	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx {
-		// Return ETH to transaction sender for operator cost overcharge.
-		if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasRemaining), false, st.evm.Context.Time); operatorCost != nil {
-			amtU256, overflow := uint256.FromBig(operatorCost)
-			if !overflow {
-				st.state.AddBalance(st.msg.From, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
-			}
-		}
-	}
-
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && st.gasRemaining > 0 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining, 0, tracing.GasChangeTxLeftOverReturned)
+	}
+
+	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx {
+		// Return ETH to transaction sender for operator cost overcharge.
+		if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasRemaining), true, st.evm.Context.Time); operatorCost != nil {
+			amtU256, overflow := uint256.FromBig(operatorCost)
+			if !overflow {
+				st.state.AddBalance(st.msg.From, amtU256, tracing.BalanceIncreaseGasReturn)
+			}
+		}
 	}
 
 	// Also return remaining gas to the block gas counter so it is
