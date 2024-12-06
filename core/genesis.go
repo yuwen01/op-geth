@@ -256,6 +256,7 @@ type ChainOverrides struct {
 	OverrideOptimismFjord    *uint64
 	OverrideOptimismGranite  *uint64
 	OverrideOptimismHolocene *uint64
+	OverrideOptimismIsthmus  *uint64
 	OverrideOptimismInterop  *uint64
 	ApplySuperchainUpgrades  bool
 }
@@ -321,6 +322,9 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, triedb *triedb.Database, g
 			}
 			if overrides != nil && overrides.OverrideOptimismHolocene != nil {
 				config.HoloceneTime = overrides.OverrideOptimismHolocene
+			}
+			if overrides != nil && overrides.OverrideOptimismIsthmus != nil {
+				config.IsthmusTime = overrides.OverrideOptimismIsthmus
 			}
 			if overrides != nil && overrides.OverrideOptimismInterop != nil {
 				config.InteropTime = overrides.OverrideOptimismInterop
