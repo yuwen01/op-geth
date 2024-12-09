@@ -165,6 +165,8 @@ type Config struct {
 
 	OverrideOptimismHolocene *uint64 `toml:",omitempty"`
 
+	OverrideOptimismIsthmus *uint64 `toml:",omitempty"`
+
 	OverrideOptimismInterop *uint64 `toml:",omitempty"`
 
 	OverrideOptimismIsthmus *uint64 `toml:",omitempty"`
