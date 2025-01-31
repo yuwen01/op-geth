@@ -57,7 +57,6 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		OverrideOptimismHolocene                  *uint64 `toml:",omitempty"`
 		OverrideOptimismIsthmus                   *uint64 `toml:",omitempty"`
 		OverrideOptimismInterop                   *uint64 `toml:",omitempty"`
-		OverrideOptimismIsthmus                   *uint64 `toml:",omitempty"`
 		ApplySuperchainUpgrades                   bool    `toml:",omitempty"`
 		RollupSequencerHTTP                       string
 		RollupSequencerTxConditionalEnabled       bool
@@ -171,7 +170,6 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		OverrideOptimismHolocene                  *uint64 `toml:",omitempty"`
 		OverrideOptimismIsthmus                   *uint64 `toml:",omitempty"`
 		OverrideOptimismInterop                   *uint64 `toml:",omitempty"`
-		OverrideOptimismIsthmus                   *uint64 `toml:",omitempty"`
 		ApplySuperchainUpgrades                   *bool   `toml:",omitempty"`
 		RollupSequencerHTTP                       *string
 		RollupSequencerTxConditionalEnabled       *bool
