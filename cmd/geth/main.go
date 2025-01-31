@@ -70,7 +70,6 @@ var (
 		utils.OverrideOptimismFjord,
 		utils.OverrideOptimismGranite,
 		utils.OverrideOptimismHolocene,
-		utils.OverrideOptimismIsthmus,
 		utils.OverrideOptimismInterop,
 		utils.OverrideOptimismIsthmus,
 		utils.EnablePersonal, // deprecated
