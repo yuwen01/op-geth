@@ -271,7 +271,7 @@ func (st *stateTransition) buyGas() error {
 	}
 	var operatorCost *big.Int
 	if st.evm.Context.OperatorCostFunc != nil && !st.msg.SkipNonceChecks && !st.msg.SkipFromEOACheck {
-		operatorCost = st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), false, st.evm.Context.Time)
+		operatorCost = st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), st.evm.Context.Time)
 		if operatorCost != nil {
 			mgval = mgval.Add(mgval, operatorCost)
 		}
@@ -605,12 +605,17 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 	// is always 0 for deposit tx. So calling refundGas will ensure the gasUsed accounting is correct without actually
 	// changing the sender's balance
 	var gasRefund uint64
+	var worstOperatorCost *big.Int = nil
+	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx {
+		worstOperatorCost = st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), st.evm.Context.Time)
+	}
+
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
-		gasRefund = st.refundGas(params.RefundQuotient)
+		gasRefund = st.refundGas(params.RefundQuotient, worstOperatorCost)
 	} else {
 		// After EIP-3529: refunds are capped to gasUsed / 5
-		gasRefund = st.refundGas(params.RefundQuotientEIP3529)
+		gasRefund = st.refundGas(params.RefundQuotientEIP3529, worstOperatorCost)
 	}
 	if st.msg.IsDepositTx && rules.IsOptimismRegolith {
 		// Skip coinbase payments for deposit tx in Regolith
@@ -660,10 +665,10 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 				}
 				st.state.AddBalance(params.OptimismL1FeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
 			}
-			if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), false, st.evm.Context.Time); operatorCost != nil {
-				amtU256, overflow = uint256.FromBig(operatorCost)
+			if worstOperatorCost != nil {
+				amtU256, overflow = uint256.FromBig(worstOperatorCost)
 				if overflow {
-					return nil, fmt.Errorf("optimism operator cost overflows U256: %d", operatorCost)
+					return nil, fmt.Errorf("optimism operator cost overflows U256: %d", worstOperatorCost)
 				}
 				st.state.AddBalance(params.OptimismOperatorFeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
 			}
@@ -736,7 +741,7 @@ func (st *stateTransition) applyAuthorization(auth *types.SetCodeAuthorization) 
 	return nil
 }
 
-func (st *stateTransition) refundGas(refundQuotient uint64) uint64 {
+func (st *stateTransition) refundGas(refundQuotient uint64, worstCaseCost *big.Int) uint64 {
 	// Apply refund counter, capped to a refund quotient
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
@@ -760,10 +765,13 @@ func (st *stateTransition) refundGas(refundQuotient uint64) uint64 {
 
 	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx {
 		// Return ETH to transaction sender for operator cost overcharge.
-		if operatorCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasRemaining), true, st.evm.Context.Time); operatorCost != nil {
-			amtU256, overflow := uint256.FromBig(operatorCost)
-			if !overflow {
-				st.state.AddBalance(st.msg.From, amtU256, tracing.BalanceIncreaseGasReturn)
+		if actualCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.Time); actualCost != nil {
+			if worstCaseCost != nil {
+				wcU256, worstCaseCostOverflow := uint256.FromBig(worstCaseCost)
+				acU256, actualCostOverflow := uint256.FromBig(actualCost)
+				if !actualCostOverflow && !worstCaseCostOverflow {
+					st.state.AddBalance(st.msg.From, new(uint256.Int).Sub(wcU256, acU256), tracing.BalanceIncreaseGasReturn)
+				}
 			}
 		}
 	}
