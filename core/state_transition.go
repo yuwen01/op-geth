@@ -607,10 +607,10 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 	var gasRefund uint64
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
-		gasRefund = st.refundGas(params.RefundQuotient)
+		gasRefund = st.refundGas(params.RefundQuotient, rules.IsOptimismIsthmus)
 	} else {
 		// After EIP-3529: refunds are capped to gasUsed / 5
-		gasRefund = st.refundGas(params.RefundQuotientEIP3529)
+		gasRefund = st.refundGas(params.RefundQuotientEIP3529, rules.IsOptimismIsthmus)
 	}
 	if st.msg.IsDepositTx && rules.IsOptimismRegolith {
 		// Skip coinbase payments for deposit tx in Regolith
@@ -660,8 +660,10 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 				}
 				st.state.AddBalance(params.OptimismL1FeeRecipient, amtU256, tracing.BalanceIncreaseRewardTransactionFee)
 			}
-			operatorFeeCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.Time)
-			st.state.AddBalance(params.OptimismOperatorFeeRecipient, operatorFeeCost, tracing.BalanceIncreaseRewardTransactionFee)
+			if rules.IsOptimismIsthmus {
+				operatorFeeCost := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.Time)
+				st.state.AddBalance(params.OptimismOperatorFeeRecipient, operatorFeeCost, tracing.BalanceIncreaseRewardTransactionFee)
+			}
 		}
 	}
 
@@ -731,7 +733,7 @@ func (st *stateTransition) applyAuthorization(auth *types.SetCodeAuthorization) 
 	return nil
 }
 
-func (st *stateTransition) refundGas(refundQuotient uint64) uint64 {
+func (st *stateTransition) refundGas(refundQuotient uint64, isIsthmus bool) uint64 {
 	// Apply refund counter, capped to a refund quotient
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
@@ -742,7 +744,7 @@ func (st *stateTransition) refundGas(refundQuotient uint64) uint64 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining, st.gasRemaining+refund, tracing.GasChangeTxRefunds)
 	}
 
-	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx {
+	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx && isIsthmus {
 		// Return ETH to transaction sender for operator cost overcharge.
 		operatorCostGasLimit := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.msg.GasLimit), st.evm.Context.Time)
 		operatorCostGasUsed := st.evm.Context.OperatorCostFunc(new(big.Int).SetUint64(st.gasUsed()), st.evm.Context.Time)
