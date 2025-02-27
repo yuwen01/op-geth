@@ -601,16 +601,19 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 			ReturnData: ret,
 		}, nil
 	}
+
+	st.refundOperatorCost()
+
 	// Note for deposit tx there is no ETH refunded for unused gas, but that's taken care of by the fact that gasPrice
 	// is always 0 for deposit tx. So calling refundGas will ensure the gasUsed accounting is correct without actually
 	// changing the sender's balance
 	var gasRefund uint64
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
-		gasRefund = st.refundGas(params.RefundQuotient, rules.IsOptimismIsthmus)
+		gasRefund = st.refundGas(params.RefundQuotient)
 	} else {
 		// After EIP-3529: refunds are capped to gasUsed / 5
-		gasRefund = st.refundGas(params.RefundQuotientEIP3529, rules.IsOptimismIsthmus)
+		gasRefund = st.refundGas(params.RefundQuotientEIP3529)
 	}
 	if st.msg.IsDepositTx && rules.IsOptimismRegolith {
 		// Skip coinbase payments for deposit tx in Regolith
@@ -733,7 +736,7 @@ func (st *stateTransition) applyAuthorization(auth *types.SetCodeAuthorization) 
 	return nil
 }
 
-func (st *stateTransition) refundGas(refundQuotient uint64, isIsthmus bool) uint64 {
+func (st *stateTransition) refundGas(refundQuotient uint64) uint64 {
 	// Apply refund counter, capped to a refund quotient
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
@@ -742,18 +745,6 @@ func (st *stateTransition) refundGas(refundQuotient uint64, isIsthmus bool) uint
 
 	if st.evm.Config.Tracer != nil && st.evm.Config.Tracer.OnGasChange != nil && refund > 0 {
 		st.evm.Config.Tracer.OnGasChange(st.gasRemaining, st.gasRemaining+refund, tracing.GasChangeTxRefunds)
-	}
-
-	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx && isIsthmus {
-		// Return ETH to transaction sender for operator cost overcharge.
-		operatorCostGasLimit := st.evm.Context.OperatorCostFunc(st.msg.GasLimit, st.evm.Context.Time)
-		operatorCostGasUsed := st.evm.Context.OperatorCostFunc(st.gasUsed(), st.evm.Context.Time)
-
-		if operatorCostGasUsed.Cmp(operatorCostGasLimit) > 0 { // Sanity check.
-			panic(fmt.Sprintf("operator cost gas used (%d) > operator cost gas limit (%d)", operatorCostGasUsed, operatorCostGasLimit))
-		}
-
-		st.state.AddBalance(st.msg.From, new(uint256.Int).Sub(operatorCostGasLimit, operatorCostGasUsed), tracing.BalanceIncreaseGasReturn)
 	}
 
 	st.gasRemaining += refund
@@ -772,6 +763,24 @@ func (st *stateTransition) refundGas(refundQuotient uint64, isIsthmus bool) uint
 	st.gp.AddGas(st.gasRemaining)
 
 	return refund
+}
+
+func (st *stateTransition) refundOperatorCost() {
+	if optimismConfig := st.evm.ChainConfig().Optimism; optimismConfig != nil && !st.msg.IsDepositTx && st.evm.ChainConfig().IsOptimismIsthmus(st.evm.Context.Time) {
+		// Return ETH to transaction sender for operator cost overcharge.
+		operatorCostGasLimit := st.evm.Context.OperatorCostFunc(st.msg.GasLimit, st.evm.Context.Time)
+		operatorCostGasUsed := st.evm.Context.OperatorCostFunc(st.gasUsed(), st.evm.Context.Time)
+
+		if operatorCostGasUsed.Cmp(operatorCostGasLimit) > 0 { // Sanity check.
+			panic(fmt.Sprintf("operator cost gas used (%d) > operator cost gas limit (%d)", operatorCostGasUsed, operatorCostGasLimit))
+		}
+
+		diff := new(uint256.Int).Sub(operatorCostGasLimit, operatorCostGasUsed)
+
+		if diff.Uint64() > 0 {
+			st.state.AddBalance(st.msg.From, diff, tracing.BalanceIncreaseGasReturn)
+		}
+	}
 }
 
 // gasUsed returns the amount of gas used up by the state transition.
